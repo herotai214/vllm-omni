@@ -24,10 +24,13 @@ Usage:
 """
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import time
+from collections import defaultdict
 from pathlib import Path
+from typing import Any, Callable
 
 import numpy as np
 import requests
@@ -89,6 +92,7 @@ def load_dataset(
     dataset_path: str | None,
     mode: str,
     num_prompts: int,
+    extra_prompts: int = 0,
 ) -> list[dict]:
     """Load prompts from prompt.json and prepare per-request data."""
     path = _ensure_prompt_json(dataset_path)
@@ -111,8 +115,9 @@ def load_dataset(
             item["image_url"] = entry.get("image_url", "")
         items.append(item)
 
-    if num_prompts and len(items) > num_prompts:
-        items = items[:num_prompts]
+    limit = num_prompts + extra_prompts if num_prompts else 0
+    if limit and len(items) > limit:
+        items = items[:limit]
     return items
 
 
@@ -135,6 +140,83 @@ def download_image(url: str, cache_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def sync_cuda() -> None:
+    """Synchronize CUDA so wall-clock timings include queued GPU work."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def timed_call(fn: Callable[[], Any]) -> tuple[Any, float]:
+    sync_cuda()
+    start = time.perf_counter()
+    result = fn()
+    sync_cuda()
+    return result, time.perf_counter() - start
+
+
+@contextmanager
+def time_method(obj: Any, method_name: str, timings: dict[str, float], key: str):
+    original = getattr(obj, method_name)
+
+    def wrapper(*args, **kwargs):
+        sync_cuda()
+        start = time.perf_counter()
+        try:
+            return original(*args, **kwargs)
+        finally:
+            sync_cuda()
+            timings[key] += time.perf_counter() - start
+
+    setattr(obj, method_name, wrapper)
+    try:
+        yield
+    finally:
+        setattr(obj, method_name, original)
+
+
+def make_generator(seed: int) -> torch.Generator:
+    return torch.Generator(device="cuda").manual_seed(seed)
+
+
+def build_gen_kwargs(args: argparse.Namespace, item: dict) -> dict[str, Any] | None:
+    gen_kwargs: dict[str, Any] = {
+        "prompt": item["prompt"],
+        "height": args.height,
+        "width": args.width,
+        "num_inference_steps": args.num_inference_steps,
+        "guidance_scale": args.guidance_scale,
+    }
+
+    if args.mode == "i2i":
+        img_path = item.get("image_path")
+        if img_path and os.path.exists(img_path):
+            gen_kwargs["image"] = [Image.open(img_path).convert("RGB")]
+        else:
+            return None
+
+    return gen_kwargs
+
+
+def run_warmup(pipe: Any, args: argparse.Namespace, items: list[dict]) -> None:
+    if args.warmup_requests <= 0:
+        return
+
+    warmup_items = [item for item in items if build_gen_kwargs(args, item) is not None]
+    if not warmup_items:
+        return
+
+    print(f"\nRunning {args.warmup_requests} warmup request(s)...")
+    for idx in range(args.warmup_requests):
+        warmup_idx = (args.warmup_offset + idx) % len(warmup_items)
+        gen_kwargs = build_gen_kwargs(args, warmup_items[warmup_idx])
+        if gen_kwargs is None:
+            continue
+        gen_kwargs["generator"] = make_generator(args.seed)
+        with torch.inference_mode():
+            timed_call(lambda: pipe(**gen_kwargs))
+    print("Warmup done.")
+
+
 def benchmark(args: argparse.Namespace) -> None:
     from diffusers.pipelines.glm_image import GlmImagePipeline
 
@@ -145,11 +227,17 @@ def benchmark(args: argparse.Namespace) -> None:
     print("=" * 60)
 
     # Load dataset
-    items = load_dataset(args.dataset_path, args.mode, args.num_prompts)
+    items = load_dataset(
+        args.dataset_path,
+        args.mode,
+        args.num_prompts,
+        extra_prompts=args.warmup_offset + args.warmup_requests,
+    )
     if not items:
         print("No prompts loaded. Exiting.")
         return
-    print(f"Loaded {len(items)} prompts for {args.mode} mode")
+    measured_items = items[: args.num_prompts] if args.num_prompts else items
+    print(f"Loaded {len(measured_items)} measured prompt(s) for {args.mode} mode")
 
     # Download I2I source images
     if args.mode == "i2i":
@@ -175,50 +263,92 @@ def benchmark(args: argparse.Namespace) -> None:
     # Create output dir
     os.makedirs(args.output_dir, exist_ok=True)
 
+    run_warmup(pipe, args, items)
+
     # Run benchmark
-    generator = torch.Generator(device="cuda").manual_seed(args.seed)
     latencies = []
+    all_stage_durations: list[dict[str, float]] = []
     success = 0
     failed = 0
 
-    print(f"\nRunning {len(items)} requests sequentially...")
+    print(f"\nRunning {len(measured_items)} requests sequentially...")
     print("-" * 60)
 
-    for i, item in enumerate(items):
-        prompt = item["prompt"]
-        gen_kwargs: dict = {
-            "prompt": prompt,
-            "height": args.height,
-            "width": args.width,
-            "num_inference_steps": args.num_inference_steps,
-            "guidance_scale": args.guidance_scale,
-            "generator": generator,
-        }
+    for i, item in enumerate(measured_items):
+        gen_kwargs = build_gen_kwargs(args, item)
+        if gen_kwargs is None:
+            print(f"  [{i + 1}] SKIP: no source image")
+            failed += 1
+            continue
 
-        if args.mode == "i2i":
-            img_path = item.get("image_path")
-            if img_path and os.path.exists(img_path):
-                gen_kwargs["image"] = [Image.open(img_path).convert("RGB")]
-            else:
-                print(f"  [{i + 1}] SKIP: no source image")
-                failed += 1
-                continue
+        generator = make_generator(args.seed)
+        gen_kwargs["generator"] = generator
+        stage_timings: dict[str, float] = defaultdict(float)
 
         t_start = time.perf_counter()
         try:
-            result = pipe(**gen_kwargs)
+            with torch.inference_mode():
+                normalized_image = pipe._validate_and_normalize_images(
+                    gen_kwargs.get("image"),
+                    batch_size=1,
+                )
+                prior_outputs, ar_elapsed = timed_call(
+                    lambda: pipe.generate_prior_tokens(
+                        prompt=gen_kwargs["prompt"],
+                        image=normalized_image,
+                        height=args.height,
+                        width=args.width,
+                        device=pipe._execution_device,
+                        generator=generator,
+                    )
+                )
+                (
+                    prior_token_ids,
+                    prior_token_image_ids,
+                    source_image_grid_thw,
+                ) = prior_outputs
+
+                stage_timings["stage_0_gen_ms"] = ar_elapsed * 1000.0
+
+                post_ar_kwargs = dict(gen_kwargs)
+                post_ar_kwargs.update(
+                    {
+                        "prior_token_ids": prior_token_ids,
+                        "prior_token_image_ids": prior_token_image_ids,
+                        "source_image_grid_thw": source_image_grid_thw,
+                    }
+                )
+
+                with (
+                    time_method(pipe, "encode_prompt", stage_timings, "hf_encode_prompt_ms"),
+                    time_method(pipe.vae, "encode", stage_timings, "hf_vae_encode_ms"),
+                    time_method(pipe.vae, "decode", stage_timings, "hf_vae_decode_ms"),
+                    time_method(pipe.transformer, "forward", stage_timings, "hf_transformer_ms"),
+                ):
+                    result, stage_1_elapsed = timed_call(lambda: pipe(**post_ar_kwargs))
+
+                stage_timings["stage_1_gen_ms"] = stage_1_elapsed * 1000.0
+                stage_timings["ar2diffusion_ms"] = 0.0
+
             image = result.images[0]
+            sync_cuda()
             elapsed = time.perf_counter() - t_start
             latencies.append(elapsed)
+            all_stage_durations.append(dict(stage_timings))
             success += 1
 
             out_path = os.path.join(args.output_dir, f"{i:04d}.png")
             image.save(out_path)
-            print(f"  [{i + 1}/{len(items)}] {elapsed:.3f}s -> {out_path}")
+            print(
+                f"  [{i + 1}/{len(measured_items)}] {elapsed:.3f}s "
+                f"ar={stage_timings['stage_0_gen_ms'] / 1000.0:.3f}s "
+                f"post_ar={stage_timings['stage_1_gen_ms'] / 1000.0:.3f}s -> {out_path}"
+            )
         except Exception as e:
+            sync_cuda()
             elapsed = time.perf_counter() - t_start
             failed += 1
-            print(f"  [{i + 1}/{len(items)}] FAILED ({elapsed:.3f}s): {e}")
+            print(f"  [{i + 1}/{len(measured_items)}] FAILED ({elapsed:.3f}s): {e}")
 
     # Report
     total_gen_time = sum(latencies) if latencies else 0
@@ -231,7 +361,7 @@ def benchmark(args: argparse.Namespace) -> None:
     print(f"{'Num inference steps:':<40} {args.num_inference_steps}")
     print("-" * 50)
     print(f"{'Pipeline init time (s):':<40} {init_time:.2f}")
-    print(f"{'Successful:':<40} {success}/{len(items)}")
+    print(f"{'Successful:':<40} {success}/{len(measured_items)}")
     print(f"{'Failed:':<40} {failed}")
     print("-" * 50)
     if latencies:
@@ -242,6 +372,15 @@ def benchmark(args: argparse.Namespace) -> None:
         print(f"{'Latency Median (s):':<40} {np.median(arr):.4f}")
         print(f"{'Latency P95 (s):':<40} {np.percentile(arr, 95):.4f}")
         print(f"{'Latency P99 (s):':<40} {np.percentile(arr, 99):.4f}")
+
+    if all_stage_durations:
+        print("-" * 50)
+        print("Pipeline Timings Mean:")
+        all_keys = sorted({key for timings in all_stage_durations for key in timings})
+        for key in all_keys:
+            vals = [timings.get(key, 0.0) for timings in all_stage_durations]
+            unit = "ms" if key.endswith("_ms") else "s"
+            print(f"  {key + ':':<38} {np.mean(vals):.4f} ({unit})")
 
     print(f"\n{'Output dir:':<40} {args.output_dir}")
     print("=" * 60)
@@ -264,6 +403,16 @@ def benchmark(args: argparse.Namespace) -> None:
         "latency_p95": float(np.percentile(latencies, 95)) if latencies else 0,
         "latency_p99": float(np.percentile(latencies, 99)) if latencies else 0,
     }
+    if all_stage_durations:
+        all_keys = sorted({key for timings in all_stage_durations for key in timings})
+        metrics["stage_durations"] = {
+            key: {
+                "mean": float(np.mean([timings.get(key, 0.0) for timings in all_stage_durations])),
+                "median": float(np.median([timings.get(key, 0.0) for timings in all_stage_durations])),
+                "p95": float(np.percentile([timings.get(key, 0.0) for timings in all_stage_durations], 95)),
+            }
+            for key in all_keys
+        }
     if args.output_file:
         with open(args.output_file, "w") as f:
             json.dump(metrics, f, indent=2)
@@ -281,6 +430,13 @@ def main() -> None:
     parser.add_argument("--num-inference-steps", type=int, default=NUM_INFERENCE_STEPS)
     parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--warmup-requests", type=int, default=1)
+    parser.add_argument(
+        "--warmup-offset",
+        type=int,
+        default=1,
+        help="Dataset offset for warmup requests; default 1 uses the next item after the measured request.",
+    )
     parser.add_argument("--output-dir", type=str, default="benchmarks/glm_image/huggingface/outputs")
     parser.add_argument("--output-file", type=str, default=None, help="JSON file for metrics")
     args = parser.parse_args()

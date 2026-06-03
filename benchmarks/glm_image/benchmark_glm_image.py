@@ -153,8 +153,9 @@ class PromptDataset:
                     image_path = download_image(url)
             self.items.append(GLMImageRequest(prompt=prompt, image_path=image_path))
 
-        if args.num_prompts and len(self.items) > args.num_prompts:
-            self.items = self.items[: args.num_prompts]
+        limit = args.num_prompts + args.warmup_offset + args.warmup_requests if args.num_prompts else 0
+        if limit and len(self.items) > limit:
+            self.items = self.items[:limit]
 
     def __len__(self) -> int:
         return len(self.items)
@@ -171,7 +172,7 @@ class RandomDataset:
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        self.num_prompts = args.num_prompts
+        self.num_prompts = args.num_prompts + args.warmup_offset + args.warmup_requests
         self._random_image_paths: list[str] | None = None
         if args.mode == "i2i":
             self._random_image_paths = self._generate_random_images()
@@ -224,8 +225,9 @@ class CustomDataset:
                     image_path=item.get("image_path"),
                 )
             )
-        if args.num_prompts and len(self.items) > args.num_prompts:
-            self.items = self.items[: args.num_prompts]
+        limit = args.num_prompts + args.warmup_offset + args.warmup_requests if args.num_prompts else 0
+        if limit and len(self.items) > limit:
+            self.items = self.items[:limit]
 
     def __len__(self) -> int:
         return len(self.items)
@@ -368,8 +370,9 @@ async def benchmark(args: argparse.Namespace) -> None:
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
-    glm_requests = dataset.get_requests()
-    print(f"Prepared {len(glm_requests)} requests (mode={args.mode}, dataset={args.dataset})")
+    all_requests = dataset.get_requests()
+    glm_requests = all_requests[: args.num_prompts] if args.num_prompts else all_requests
+    print(f"Prepared {len(glm_requests)} measured request(s) (mode={args.mode}, dataset={args.dataset})")
 
     semaphore = asyncio.Semaphore(args.max_concurrency) if args.max_concurrency else None
 
@@ -381,10 +384,11 @@ async def benchmark(args: argparse.Namespace) -> None:
 
     async with aiohttp.ClientSession() as session:
         # Warmup
-        if args.warmup_requests and glm_requests:
+        if args.warmup_requests and all_requests:
             print(f"Running {args.warmup_requests} warmup request(s)...")
             for i in range(args.warmup_requests):
-                await limited_request(i, glm_requests[i % len(glm_requests)], session, None)
+                warmup_idx = (args.warmup_offset + i) % len(all_requests)
+                await limited_request(i, all_requests[warmup_idx], session, None)
 
         # Main benchmark
         pbar = tqdm(total=len(glm_requests), disable=args.disable_tqdm)
@@ -446,6 +450,12 @@ def main() -> None:
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--request-rate", type=float, default=float("inf"))
     parser.add_argument("--warmup-requests", type=int, default=1)
+    parser.add_argument(
+        "--warmup-offset",
+        type=int,
+        default=1,
+        help="Dataset offset for warmup requests; default 1 uses the next item after the measured request.",
+    )
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--num-inference-steps", type=int, default=50)

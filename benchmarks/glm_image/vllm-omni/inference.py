@@ -92,6 +92,7 @@ def load_dataset(
     dataset_path: str | None,
     mode: str,
     num_prompts: int,
+    extra_prompts: int = 0,
 ) -> list[dict]:
     path = _ensure_prompt_json(dataset_path)
     with open(path, encoding="utf-8") as f:
@@ -109,8 +110,9 @@ def load_dataset(
             item["image_url"] = entry.get("image_url", "")
         items.append(item)
 
-    if num_prompts and len(items) > num_prompts:
-        items = items[:num_prompts]
+    limit = num_prompts + extra_prompts if num_prompts else 0
+    if limit and len(items) > limit:
+        items = items[:limit]
     return items
 
 
@@ -200,11 +202,16 @@ def benchmark(args: argparse.Namespace) -> None:
     print("=" * 60)
 
     # Load dataset
-    items = load_dataset(args.dataset_path, args.mode, args.num_prompts)
+    items = load_dataset(
+        args.dataset_path,
+        args.mode,
+        args.num_prompts,
+        extra_prompts=args.warmup_offset + args.warmup_requests,
+    )
     if not items:
         print("No prompts loaded. Exiting.")
         return
-    print(f"Loaded {len(items)} prompts for {args.mode} mode")
+    print(f"Loaded {min(len(items), args.num_prompts) if args.num_prompts else len(items)} measured prompt(s) for {args.mode} mode")
 
     # Download I2I source images
     if is_i2i:
@@ -271,17 +278,21 @@ def benchmark(args: argparse.Namespace) -> None:
             all_prompts.append(build_prompt_t2i(item["prompt"], args.height, args.width, **gen_kw))
 
     valid = len(all_prompts)
-    print(f"Valid prompts: {valid}")
+    measured_prompts = all_prompts[: args.num_prompts] if args.num_prompts else all_prompts
+    valid = len(measured_prompts)
+    print(f"Valid measured prompts: {valid}")
 
     # Create output dir
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Warmup: run 1 request to prime caches, CUDA graphs, etc.
-    if all_prompts:
-        print("Running warmup request...")
+    # Warmup: prime caches, CUDA graphs, etc. before measured requests.
+    if all_prompts and args.warmup_requests > 0:
+        print(f"Running {args.warmup_requests} warmup request(s)...")
         try:
-            warmup_prompt = [all_prompts[0]]
-            omni.generate(warmup_prompt, sampling_params_list, py_generator=False)
+            for idx in range(args.warmup_requests):
+                warmup_idx = (args.warmup_offset + idx) % len(all_prompts)
+                warmup_prompt = [all_prompts[warmup_idx]]
+                omni.generate(warmup_prompt, sampling_params_list, py_generator=False)
             print("Warmup done.\n")
         except Exception as e:
             print(f"Warmup failed (continuing): {e}")
@@ -296,9 +307,16 @@ def benchmark(args: argparse.Namespace) -> None:
     failed = 0
     wall_start = time.perf_counter()
 
+    def iter_omni_outputs():
+        if args.sequential:
+            for prompt in measured_prompts:
+                yield from omni.generate([prompt], sampling_params_list, py_generator=True)
+        else:
+            yield from omni.generate(measured_prompts, sampling_params_list, py_generator=True)
+
     try:
         output_idx = 0
-        for stage_outputs in omni.generate(all_prompts, sampling_params_list, py_generator=True):
+        for stage_outputs in iter_omni_outputs():
             if stage_outputs.final_output_type == "image":
                 request_output = stage_outputs.request_output
                 request_id = getattr(request_output, "request_id", "")
@@ -350,9 +368,10 @@ def benchmark(args: argparse.Namespace) -> None:
     prev_stage_0_ms = 0.0
     for sd in all_stage_durations:
         actual = dict(sd)
-        s0 = sd.get("stage_0_gen_ms", 0.0)
-        actual["stage_0_gen_ms"] = s0 - prev_stage_0_ms
-        prev_stage_0_ms = s0
+        if not args.sequential:
+            s0 = sd.get("stage_0_gen_ms", 0.0)
+            actual["stage_0_gen_ms"] = s0 - prev_stage_0_ms
+            prev_stage_0_ms = s0
         per_request_actual.append(actual)
 
     per_request_e2e_ms: list[float] = []
@@ -419,6 +438,7 @@ def benchmark(args: argparse.Namespace) -> None:
     # Metrics JSON
     metrics = {
         "backend": "vllm-omni",
+        "execution_mode": "sequential" if args.sequential else "continuous_batching",
         "mode": args.mode,
         "model": args.model_path,
         "height": args.height,
@@ -479,6 +499,18 @@ def main() -> None:
     parser.add_argument("--num-inference-steps", type=int, default=NUM_INFERENCE_STEPS)
     parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--warmup-requests", type=int, default=1)
+    parser.add_argument(
+        "--warmup-offset",
+        type=int,
+        default=1,
+        help="Dataset offset for warmup requests; default 1 uses the next item after the measured request.",
+    )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Submit prompts one at a time instead of one continuous-batched request set.",
+    )
     parser.add_argument("--output-dir", type=str, default="benchmarks/glm_image/vllm-omni/outputs")
     parser.add_argument("--output-file", type=str, default=None, help="JSON file for metrics")
     parser.add_argument("--stage-init-timeout", type=int, default=600)

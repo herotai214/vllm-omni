@@ -477,9 +477,8 @@ class StageDiffusionClient(StageClientBase):
         try:
             while True:
                 self._drain_responses()
-                result = self._rpc_results.pop(rpc_id, None)
-                if result is not None:
-                    return result
+                if rpc_id in self._rpc_results:
+                    return self._rpc_results.pop(rpc_id)
                 if self._engine_dead or (self._owns_process and self._proc is not None and not self._proc.is_alive()):
                     self._engine_dead = True
                     raise EngineDeadError(
