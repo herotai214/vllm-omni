@@ -32,6 +32,8 @@ from vllm_omni.entrypoints.openai.protocol.videos import (
 from vllm_omni.entrypoints.openai.serving_video import OmniOpenAIServingVideo
 from vllm_omni.entrypoints.openai.storage import LocalStorageManager
 from vllm_omni.entrypoints.openai.stores import AsyncDictStore, TaskRegistry
+from vllm_omni.entrypoints.openai.video.generation import helpers as video_generation_helpers
+from vllm_omni.entrypoints.openai.video.generation.helpers import _reference_video_decode_spec
 from vllm_omni.errors import GuardrailViolationError
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 
@@ -112,6 +114,8 @@ def isolated_video_backends(tmp_path, monkeypatch):
     monkeypatch.setattr(api_server, "VIDEO_STORE", store)
     monkeypatch.setattr(api_server, "VIDEO_TASKS", tasks)
     monkeypatch.setattr(api_server, "STORAGE_MANAGER", storage)
+    monkeypatch.setattr(video_generation_helpers, "VIDEO_STORE", store)
+    monkeypatch.setattr(video_generation_helpers, "STORAGE_MANAGER", storage)
     return store, tasks, storage
 
 
@@ -525,7 +529,7 @@ def test_cosmos3_reference_video_limit_uses_v2v_condition_frames():
         extra_params={"condition_frame_indexes_vision": [0, 2]},
     )
 
-    spec = api_server._reference_video_decode_spec(request, _cosmos3_stage_configs())
+    spec = _reference_video_decode_spec(request, _cosmos3_stage_configs())
     assert spec.max_frames == 9
     assert spec.keep == "first"
 
@@ -537,7 +541,7 @@ def test_cosmos3_reference_video_limit_preserves_action_frames():
         extra_params={"action_mode": "inverse_dynamics", "action_chunk_size": 16},
     )
 
-    assert api_server._reference_video_decode_spec(request, _cosmos3_stage_configs()).max_frames == 17
+    assert _reference_video_decode_spec(request, _cosmos3_stage_configs()).max_frames == 17
 
 
 def test_cosmos3_reference_video_limit_caps_condition_frames_to_output_frames():
@@ -547,7 +551,7 @@ def test_cosmos3_reference_video_limit_caps_condition_frames_to_output_frames():
         extra_params={"condition_frame_indexes_vision": [0, 20]},
     )
 
-    assert api_server._reference_video_decode_spec(request, _cosmos3_stage_configs()).max_frames == 5
+    assert _reference_video_decode_spec(request, _cosmos3_stage_configs()).max_frames == 5
 
 
 def test_s2v_video_generation_with_audio_reference_form(test_client, mocker: MockerFixture):
