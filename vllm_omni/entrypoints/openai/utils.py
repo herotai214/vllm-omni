@@ -1,4 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Shared OpenAI serving utilities.
+
+This file contains stage-config and LoRA helpers used by multiple OpenAI
+serving paths."""
 
 from __future__ import annotations
 

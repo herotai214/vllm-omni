@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""OpenAI LoRA request helpers.
+
+Use this module for HTTP-facing LoRA parsing shared by OpenAI-compatible
+endpoint families."""
+
 import json
 from http import HTTPStatus
 from typing import Any

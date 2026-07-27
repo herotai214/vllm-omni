@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Route-table helpers for Omni server assembly.
+
+These helpers are for app/router mutation during server construction."""
+
 from fastapi import APIRouter
 from starlette.routing import Route
 

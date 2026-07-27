@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Server-level error helpers for vLLM-Omni entrypoints.
+
+Use this module for FastAPI/app exception handling and engine-failure response
+construction that is not owned by a single OpenAI endpoint family."""
+
 from typing import Any
 
 from fastapi import Request

@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""OpenAI-compatible API server bootstrap for vLLM-Omni.
+
+This module owns app construction, server startup, app-state initialization,
+and route bodies that have not yet moved to endpoint-owned modules."""
+
 import asyncio
 import base64
 import dataclasses

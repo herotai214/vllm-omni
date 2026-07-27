@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Video generation helper functions.
+
+This module owns non-route helper logic for the ``/v1/videos`` resource family."""
+
 import asyncio
 import json
 import os

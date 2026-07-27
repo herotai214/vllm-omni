@@ -1,3 +1,9 @@
+"""OpenAI endpoint error helpers.
+
+This module owns helpers that are specific to OpenAI-compatible response
+shapes. Server-level exception handling belongs in
+``vllm_omni.entrypoints.serve.utils.errors``."""
+
 from http import HTTPStatus
 
 from fastapi import Request

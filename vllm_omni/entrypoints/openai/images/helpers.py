@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Image endpoint helper functions.
+
+This module owns helpers that are currently specific to OpenAI-compatible image
+generation/edit endpoints."""
+
 import base64
 import io
 from http import HTTPStatus

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Chat-template loading helpers for OpenAI server bootstrap."""
+
 import json
 from pathlib import Path
 

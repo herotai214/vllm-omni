@@ -1,3 +1,8 @@
+"""Audio serving utility mixin.
+
+This file contains shared audio serving helpers used by speech/audio serving
+internals."""
+
 from io import BytesIO
 
 import numpy as np

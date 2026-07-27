@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""OpenAI app-state accessors.
+
+This module owns small helpers that read initialized serving objects or engine
+configuration from ``request.app.state``."""
+
 from http import HTTPStatus
 from typing import Any
 
