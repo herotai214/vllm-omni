@@ -69,7 +69,7 @@ def shutdown_unsupported_routes(
     """Given an initialized FastAPI server instance and a set of model specific endpoint
     restrictions, remove the restricted routes and patch a handler that returns 400.
     """
-    from vllm_omni.entrypoints.openai.api_server import _remove_route_from_app
+    from vllm_omni.entrypoints.serve.utils.routes import _remove_route_from_app
 
     # Generally these should not overlap since there is no point. If they do,
     # we use the reason message in UNSUPPORTED_ROUTES, for consistent error messages.

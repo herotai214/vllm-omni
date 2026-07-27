@@ -20,7 +20,6 @@ from typing import Annotated, Any, Literal
 import vllm.envs as envs
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
 from starlette.datastructures import State
 from starlette.types import ASGIApp, Receive, Scope, Send
 from vllm.engine.protocol import EngineClient
@@ -79,34 +78,40 @@ from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 
 from vllm_omni.config.endpoint_policy import shutdown_unsupported_routes
 from vllm_omni.entrypoints.async_omni import AsyncOmni
-from vllm_omni.entrypoints.openai.duplex_capability import should_enable_duplex_endpoint
-from vllm_omni.entrypoints.openai.errors import InvalidInputReferenceError
-from vllm_omni.entrypoints.openai.common.chat_template import _load_model_chat_template_json
-from vllm_omni.entrypoints.openai.common.config import (
+from vllm_omni.entrypoints.openai import app_state as openai_app_state
+from vllm_omni.entrypoints.openai.app_state import (
     ENDPOINT_LOAD_METRICS_FORMAT_HEADER_LABEL,
-    _get_vllm_config,
-)
-from vllm_omni.entrypoints.openai.common.deps import (
     OmniAudioGenerate,
     Omnichat,
     Omnispeech,
+    _get_engine_and_model,
 )
-from vllm_omni.entrypoints.openai.common.errors import (
-    _create_engine_error_json_response,
+from vllm_omni.entrypoints.openai.chat_template import _load_model_chat_template_json
+from vllm_omni.entrypoints.openai.duplex_capability import should_enable_duplex_endpoint
+from vllm_omni.entrypoints.openai.diffusion import (
+    MAX_UINT32_SEED,
+    _generate_with_async_omni,
+    apply_stage_default_sampling_params,
+)
+from vllm_omni.entrypoints.openai.errors import (
+    InvalidInputReferenceError,
     _create_speech_error_json_response,
     _error_response_to_json_response,
+)
+from vllm_omni.entrypoints.serve.utils.errors import (
+    _create_engine_error_json_response,
     _register_omni_exception_handlers,
 )
-from vllm_omni.entrypoints.openai.common.profile import _should_enable_profiler_endpoints
-from vllm_omni.entrypoints.openai.common.routes import _remove_route_from_app, _remove_route_from_router
+from vllm_omni.entrypoints.serve.profile.utils import _should_enable_profiler_endpoints
+from vllm_omni.entrypoints.serve.utils.routes import _remove_route_from_app, _remove_route_from_router
 from vllm_omni.entrypoints.openai.images.helpers import (
     _build_hunyuan_edit_extra_args,
     _check_max_generated_image_size,
     _choose_output_format,
     _extract_images_from_result,
-    _get_engine_and_model,
     _get_max_edit_input_images,
     _load_input_images,
+    _update_if_not_none,
 )
 from vllm_omni.entrypoints.openai.image_api_utils import (
     SUPPORTED_LAYERED_RESOLUTIONS,
@@ -115,13 +120,8 @@ from vllm_omni.entrypoints.openai.image_api_utils import (
     parse_size,
     validate_layered_layers,
 )
-from vllm_omni.entrypoints.openai.media.lora import _get_lora_from_json_str, _parse_lora_request
-from vllm_omni.entrypoints.openai.media.sampling import (
-    MAX_UINT32_SEED,
-    _generate_with_async_omni,
-    apply_stage_default_sampling_params,
-)
-from vllm_omni.entrypoints.openai.media.utils import _update_if_not_none
+from vllm_omni.entrypoints.openai.lora import _get_lora_from_json_str, _parse_lora_request
+from vllm_omni.entrypoints.openai.models import serving as openai_models_serving
 from vllm_omni.entrypoints.openai.protocol.audio import (
     BatchSpeechRequest,
     OpenAICreateAudioGenerateRequest,
@@ -156,7 +156,6 @@ from vllm_omni.entrypoints.openai.serving_video_stream import create_streaming_v
 from vllm_omni.entrypoints.openai.storage import STORAGE_MANAGER, FileStorageHandle
 from vllm_omni.entrypoints.openai.stores import VIDEO_STORE, VIDEO_TASKS
 from vllm_omni.entrypoints.openai.utils import get_stage_type
-from vllm_omni.entrypoints.openai.system.models import _DiffusionServingModels
 from vllm_omni.entrypoints.openai.video.generation.helpers import (
     VIDEO_SYNC_TIMEOUT_S,
     _parse_video_form,
@@ -167,6 +166,8 @@ from vllm_omni.entrypoints.openai.video.generation.helpers import (
 from vllm_omni.entrypoints.openpi.serving import ServingRealtimeRobotOpenPI
 from vllm_omni.errors import OmniClientError
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniTextPrompt
+from vllm_omni.entrypoints.serve.omni_control.protocol import OmniSleepRequest, OmniWakeupRequest
+from vllm_omni.entrypoints.serve.profile.protocol import ProfileRequest
 from vllm_omni.utils.forced_aligner import build_forced_aligner_config
 from vllm_omni.utils.tracking_parser import TrackingArgumentParser, TrackingNamespace
 
@@ -174,15 +175,6 @@ logger = init_logger(__name__)
 router = APIRouter()
 
 profiler_router = APIRouter()
-
-
-class ProfileRequest(BaseModel):
-    """Request model for profiling endpoints."""
-
-    stages: list[int] | None = Field(
-        default=None,
-        description="List of stage IDs to profile. If None, profiles all stages.",
-    )
 
 
 # Server entry points
@@ -278,7 +270,7 @@ async def omni_run_server_worker(listen_address, sock, args, client_config=None,
             logger.warning("Profiler endpoints are enabled. This should ONLY be used for local development!")
             app.include_router(profiler_router)
 
-        vllm_config = await _get_vllm_config(engine_client)
+        vllm_config = await openai_app_state._get_vllm_config(engine_client)
 
         # Check if pure diffusion mode (vllm_config will be None)
         is_pure_diffusion = vllm_config is None
@@ -473,7 +465,7 @@ async def omni_init_app_state(
         args: Parsed command-line arguments
     """
     # Get vllm_config from engine_client (following 0.14.0 pattern)
-    vllm_config = await _get_vllm_config(engine_client)
+    vllm_config = await openai_app_state._get_vllm_config(engine_client)
 
     # Detect if it's pure Diffusion mode (single stage and is Diffusion)
     is_pure_diffusion = False
@@ -509,7 +501,7 @@ async def omni_init_app_state(
     if is_pure_diffusion:
         state.vllm_config = None
         state.diffusion_engine = engine_client
-        state.openai_serving_models = _DiffusionServingModels(base_model_paths)
+        state.openai_serving_models = openai_models_serving._DiffusionServingModels(base_model_paths)
         # OMNI: tokenization endpoints are not supported in pure diffusion mode.
         state.serving_tokenization = None
 
@@ -562,7 +554,7 @@ async def omni_init_app_state(
     # LLM or multi-stage mode: use standard initialization logic
     if vllm_config is None:
         # Try to get vllm_config from engine_client
-        vllm_config = await _get_vllm_config(engine_client)
+        vllm_config = await openai_app_state._get_vllm_config(engine_client)
         if vllm_config is None:
             logger.warning("vllm_config is None, some features may not work correctly")
 
@@ -2383,15 +2375,6 @@ async def stop_profile(raw_request: Request, request: ProfileRequest | None = No
         raise HTTPException(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=f"Failed to stop profiler: {str(e)}"
         )
-
-
-class OmniSleepRequest(BaseModel):
-    stage_ids: list[int]
-    level: int = 2
-
-
-class OmniWakeupRequest(BaseModel):
-    stage_ids: list[int]
 
 
 @router.post("/v1/omni/sleep")

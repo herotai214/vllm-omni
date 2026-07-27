@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
-
 def _should_enable_profiler_endpoints(stage_configs: list | None) -> bool:
     """Check if any stage has profiler_config set in its engine_args."""
     if not stage_configs:

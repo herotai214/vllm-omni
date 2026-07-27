@@ -15,7 +15,7 @@ from vllm.logger import init_logger
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 
 from vllm_omni.diffusion.models.interface import ReferenceVideoDecodeSpec
-from vllm_omni.entrypoints.openai.common.deps import Omnivideo
+from vllm_omni.entrypoints.openai.app_state import Omnivideo
 from vllm_omni.entrypoints.openai.errors import InvalidInputReferenceError
 from vllm_omni.entrypoints.openai.protocol.videos import (
     SecondStr,

@@ -244,7 +244,7 @@ def pure_diffusion_app(pure_diffusion_engine, mocker):
     mocker.patch(
         "vllm_omni.entrypoints.openai.api_server.OmniOpenAIServingSpeech"
     ).for_diffusion.return_value = mocker.MagicMock()
-    mocker.patch("vllm_omni.entrypoints.openai.api_server._DiffusionServingModels")
+    mocker.patch("vllm_omni.entrypoints.openai.models.serving._DiffusionServingModels")
 
     loop = asyncio.new_event_loop()
     try:
