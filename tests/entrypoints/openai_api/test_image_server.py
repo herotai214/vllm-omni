@@ -25,11 +25,11 @@ from vllm.sampling_params import RequestOutputKind
 
 from vllm_omni.entrypoints.async_omni import AsyncOmni
 from vllm_omni.entrypoints.openai.api_server import router
-from vllm_omni.entrypoints.openai.images.helpers import _check_max_generated_image_size
 from vllm_omni.entrypoints.openai.image_api_utils import (
     encode_image_base64,
     parse_size,
 )
+from vllm_omni.entrypoints.openai.images.helpers import _check_max_generated_image_size
 from vllm_omni.entrypoints.openai.models.serving import _DiffusionServingModels
 from vllm_omni.entrypoints.openai.serving_chat import OmniOpenAIServingChat
 from vllm_omni.errors import GuardrailViolationError
