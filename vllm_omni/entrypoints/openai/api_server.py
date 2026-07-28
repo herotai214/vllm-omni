@@ -6,7 +6,6 @@ This module owns app construction, server startup, app-state initialization,
 and route bodies that have not yet moved to endpoint-owned modules."""
 
 import asyncio
-import base64
 import dataclasses
 import json
 import multiprocessing
@@ -55,7 +54,6 @@ from vllm.entrypoints.pooling.embed.serving import ServingEmbedding as OpenAISer
 from vllm.entrypoints.pooling.pooling.serving import ServingPooling
 from vllm.entrypoints.pooling.scoring.serving import ServingScores
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
-
 from vllm.entrypoints.serve.tokenize.serving import ServingTokenization
 from vllm.entrypoints.serve.utils.api_utils import (
     load_aware_call,
@@ -92,23 +90,23 @@ from vllm_omni.entrypoints.openai.app_state import (
     _get_engine_and_model,
 )
 from vllm_omni.entrypoints.openai.chat_template import _load_model_chat_template_json
-from vllm_omni.entrypoints.openai.duplex_capability import should_enable_duplex_endpoint
 from vllm_omni.entrypoints.openai.diffusion import (
     MAX_UINT32_SEED,
     _generate_with_async_omni,
     apply_stage_default_sampling_params,
 )
+from vllm_omni.entrypoints.openai.duplex_capability import should_enable_duplex_endpoint
 from vllm_omni.entrypoints.openai.errors import (
-    InvalidInputReferenceError,
     _create_speech_error_json_response,
     _error_response_to_json_response,
 )
-from vllm_omni.entrypoints.serve.utils.errors import (
-    _create_engine_error_json_response,
-    _register_omni_exception_handlers,
+from vllm_omni.entrypoints.openai.image_api_utils import (
+    SUPPORTED_LAYERED_RESOLUTIONS,
+    encode_image_base64,
+    encode_image_base64_with_compression,
+    parse_size,
+    validate_layered_layers,
 )
-from vllm_omni.entrypoints.serve.profile.utils import _should_enable_profiler_endpoints
-from vllm_omni.entrypoints.serve.utils.routes import _remove_route_from_app, _remove_route_from_router
 from vllm_omni.entrypoints.openai.images.helpers import (
     _build_hunyuan_edit_extra_args,
     _check_max_generated_image_size,
@@ -117,13 +115,6 @@ from vllm_omni.entrypoints.openai.images.helpers import (
     _get_max_edit_input_images,
     _load_input_images,
     _update_if_not_none,
-)
-from vllm_omni.entrypoints.openai.image_api_utils import (
-    SUPPORTED_LAYERED_RESOLUTIONS,
-    encode_image_base64,
-    encode_image_base64_with_compression,
-    parse_size,
-    validate_layered_layers,
 )
 from vllm_omni.entrypoints.openai.lora import _get_lora_from_json_str, _parse_lora_request
 from vllm_omni.entrypoints.openai.models import serving as openai_models_serving
@@ -169,10 +160,16 @@ from vllm_omni.entrypoints.openai.video.generation.helpers import (
     video_response_from_request,
 )
 from vllm_omni.entrypoints.openpi.serving import ServingRealtimeRobotOpenPI
-from vllm_omni.errors import OmniClientError
-from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniTextPrompt
 from vllm_omni.entrypoints.serve.omni_control.protocol import OmniSleepRequest, OmniWakeupRequest
 from vllm_omni.entrypoints.serve.profile.protocol import ProfileRequest
+from vllm_omni.entrypoints.serve.profile.utils import _should_enable_profiler_endpoints
+from vllm_omni.entrypoints.serve.utils.errors import (
+    _create_engine_error_json_response,
+    _register_omni_exception_handlers,
+)
+from vllm_omni.entrypoints.serve.utils.routes import _remove_route_from_app, _remove_route_from_router
+from vllm_omni.errors import OmniClientError
+from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniTextPrompt
 from vllm_omni.utils.forced_aligner import build_forced_aligner_config
 from vllm_omni.utils.tracking_parser import TrackingArgumentParser, TrackingNamespace
 
