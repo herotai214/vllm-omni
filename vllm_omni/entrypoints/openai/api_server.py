@@ -2200,6 +2200,7 @@ async def create_video(
         ReferenceImage | None,
         ReferenceVideo | None,
         ReferenceAudio | None,
+        str | None,
     ] = Depends(_parse_video_form),
 ) -> VideoResponse:
     """Create an asynchronous video generation job.
@@ -2207,7 +2208,15 @@ async def create_video(
     Accepts multipart form-data (see ``_parse_video_form`` for parameters),
     persists a queued job record, and starts generation in the background.
     """
-    request, handler, effective_model_name, reference_image, reference_video, reference_audio = ctx
+    (
+        request,
+        handler,
+        effective_model_name,
+        reference_image,
+        reference_video,
+        reference_audio,
+        control_path,
+    ) = ctx
     ref = video_response_from_request(effective_model_name, request)
     await VIDEO_STORE.upsert(ref.id, ref)
     task = asyncio.create_task(
@@ -2218,6 +2227,7 @@ async def create_video(
             reference_image,
             reference_video,
             reference_audio,
+            control_path,
             app_state=raw_request.app.state,
         )
     )
@@ -2243,6 +2253,7 @@ async def create_video_sync(
         ReferenceImage | None,
         ReferenceVideo | None,
         ReferenceAudio | None,
+        str | None,
     ] = Depends(_parse_video_form),
 ) -> Response:
     """Synchronous video generation endpoint.
@@ -2254,7 +2265,15 @@ async def create_video_sync(
     Metadata is returned via response headers ``X-Request-Id``,
     ``X-Model``, and ``X-Inference-Time-S``.
     """
-    request, handler, effective_model_name, reference_image, reference_video, reference_audio = ctx
+    (
+        request,
+        handler,
+        effective_model_name,
+        reference_image,
+        reference_video,
+        reference_audio,
+        control_path,
+    ) = ctx
     request_id = f"video_sync-{random_uuid()}"
     raw_request.state.request_metadata = RequestResponseMetadata(request_id=request_id)
     started_at = time.perf_counter()
@@ -2288,7 +2307,7 @@ async def create_video_sync(
             detail=f"Video generation failed: {str(exc)}",
         ) from exc
     finally:
-        _cleanup_video_references(reference_video, reference_audio)
+        _cleanup_video_references(reference_video, reference_audio, control_path)
     inference_time_s = time.perf_counter() - started_at
 
     return Response(
