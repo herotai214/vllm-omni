@@ -208,12 +208,22 @@ def _reference_video_decode_spec(
 
 
 def video_response_from_request(model_name: str, req: VideoGenerationRequest) -> VideoResponse:
+    video_params = req.resolve_video_params()
+    duration_s = None
+    if req.seconds is not None:
+        duration_s = float(req.seconds)
+    elif video_params.num_frames is not None and video_params.fps is not None:
+        duration_s = video_params.num_frames / video_params.fps
+
     resp = VideoResponse(
         model=model_name,
         status=VideoGenerationStatus.QUEUED,
         size=req.size,
         prompt=req.prompt,
         quality=req.quality or "default",
+        fps=video_params.fps,
+        num_frames=video_params.num_frames,
+        duration_s=duration_s,
     )
     resp.seconds = str(req.seconds or resp.seconds)
     return resp
