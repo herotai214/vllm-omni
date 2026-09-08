@@ -27,7 +27,7 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from http import HTTPStatus
 from numbers import Integral
@@ -53,6 +53,7 @@ from vllm_omni.entrypoints.openai.errors import InvalidInputReferenceError
 from vllm_omni.entrypoints.openai.protocol.videos import (
     SecondStr,
     SizeStr,
+    VideoAction,
     VideoError,
     VideoGenerationRequest,
     VideoGenerationStatus,
@@ -288,6 +289,25 @@ def _cleanup_video_references(
         os.unlink(control_path)
 
 
+def _unpack_video_generation_result(
+    result: Sequence[object],
+) -> tuple[bytes, dict[str, float], float, VideoAction | None, dict[str, object]]:
+    video_metadata: dict[str, object] = {}
+    if len(result) == 5:
+        video_bytes, stage_durations, peak_memory_mb, action, raw_metadata = result
+        if isinstance(raw_metadata, dict):
+            video_metadata = {str(key): value for key, value in raw_metadata.items()}
+    else:
+        video_bytes, stage_durations, peak_memory_mb, action = result
+    return (
+        cast(bytes, video_bytes),
+        cast(dict[str, float], stage_durations),
+        float(cast(float, peak_memory_mb)),
+        cast(VideoAction | None, action),
+        video_metadata,
+    )
+
+
 async def _run_video_generation_job(
     handler: OmniOpenAIServingVideo,
     request: VideoGenerationRequest,
@@ -307,12 +327,14 @@ async def _run_video_generation_job(
     await VIDEO_STORE.update_fields(video_id, {"status": VideoGenerationStatus.IN_PROGRESS})
     started_at = time.perf_counter()
     try:
-        video_bytes, stage_durations, peak_memory_mb, action = await handler.generate_video_bytes(
-            request,
-            video_id,
-            reference_image=reference_image,
-            reference_video=reference_video,
-            reference_audio=reference_audio,
+        video_bytes, stage_durations, peak_memory_mb, action, video_metadata = _unpack_video_generation_result(
+            await handler.generate_video_bytes(
+                request,
+                video_id,
+                reference_image=reference_image,
+                reference_video=reference_video,
+                reference_audio=reference_audio,
+            )
         )
 
         save_context = await STORAGE_MANAGER.save(video_bytes, video_id)
@@ -328,6 +350,7 @@ async def _run_video_generation_job(
             "peak_memory_mb": peak_memory_mb,
             "action": action,
         }
+        updated_fields.update({key: value for key, value in video_metadata.items() if value is not None})
         if save_context.expires_at is not None:
             updated_fields["expires_at"] = save_context.expires_at
 
@@ -688,6 +711,7 @@ async def _parse_video_form(
     frame_interpolation_model_path: str | None = Form(default=None),
     lora: str | None = Form(default=None),
     extra_params: str | None = Form(default=None),
+    return_stage_metrics: bool | None = Form(default=None),
 ) -> tuple[
     VideoGenerationRequest,
     "OmniOpenAIServingVideo",
@@ -758,6 +782,7 @@ async def _parse_video_form(
         "frame_interpolation_model_path": frame_interpolation_model_path,
         "lora": _parse_form_json(lora, expected_type=dict),
         "extra_params": _parse_form_json(extra_params, expected_type=dict),
+        "return_stage_metrics": return_stage_metrics,
     }
     request_data = {k: v for k, v in request_data.items() if v is not None}
     request = VideoGenerationRequest(**request_data)

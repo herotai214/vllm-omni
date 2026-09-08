@@ -169,6 +169,7 @@ from vllm_omni.entrypoints.openai.video.generation.helpers import (
     _parse_video_form,
     _run_video_generation_job,
     _status_code_for_video_failure,
+    _unpack_video_generation_result,
     video_response_from_request,
 )
 from vllm_omni.entrypoints.openpi.serving import ServingRealtimeRobotOpenPI
@@ -1564,12 +1565,26 @@ async def show_available_models(raw_request: Request) -> JSONResponse:
 # Image generation API endpoints
 
 
+def _build_image_response_metrics(
+    *,
+    response_metrics: Any,
+    stage_durations: Any,
+    peak_memory_mb: Any,
+) -> dict[str, Any]:
+    """Merge detailed stage metrics with the legacy image timing fields."""
+    metrics = dict(response_metrics) if isinstance(response_metrics, dict) else {}
+    metrics["stage_durations"] = stage_durations or None
+    metrics["peak_memory_mb"] = float(peak_memory_mb) if peak_memory_mb else None
+    return metrics
+
+
 def _build_image_generation_response(
     *,
     images: list[Image.Image],
     request: ImageGenerationRequest,
     stage_durations: Any,
     peak_memory_mb: Any,
+    response_metrics: Any = None,
 ) -> ImageGenerationResponse | StreamingResponse:
     """Encode generated images and apply the requested response format."""
     output_format = _choose_output_format(request.output_format or "png", None)
@@ -1584,10 +1599,11 @@ def _build_image_generation_response(
         "created": int(time.time()),
         "data": image_data,
         "output_format": output_format,
-        "metrics": {
-            "stage_durations": stage_durations or None,
-            "peak_memory_mb": float(peak_memory_mb) if peak_memory_mb else None,
-        },
+        "metrics": _build_image_response_metrics(
+            response_metrics=response_metrics,
+            stage_durations=stage_durations,
+            peak_memory_mb=peak_memory_mb,
+        ),
     }
     if request.size is not None:
         response_kwargs["size"] = request.size
@@ -1684,6 +1700,8 @@ async def generate_images(
                 extra_body["use_system_prompt"] = request.use_system_prompt
             if request.system_prompt is not None:
                 extra_body["system_prompt"] = request.system_prompt
+            if request.return_stage_metrics is not None:
+                extra_body["return_stage_metrics"] = request.return_stage_metrics
 
             generation_result = await chat_handler.generate_diffusion_images(
                 prompt=request.prompt,
@@ -1697,12 +1715,13 @@ async def generate_images(
                     status_code=generation_result.error.code if generation_result.error else 400,
                     content=generation_result.model_dump(),
                 )
-            flat_images, stage_durations, peak_memory_mb, _ = generation_result
+            flat_images, stage_durations, peak_memory_mb, _, response_metrics = generation_result
             return _build_image_generation_response(
                 images=flat_images,
                 request=request,
                 stage_durations=stage_durations,
                 peak_memory_mb=peak_memory_mb,
+                response_metrics=response_metrics,
             )
 
         # Build params - pass through user values directly
@@ -1792,11 +1811,13 @@ async def generate_images(
 
         stage_durations = getattr(result, "stage_durations", None)
         peak_memory_mb = getattr(result, "peak_memory_mb", None)
+        response_metrics = getattr(result, "metrics", None) if request.return_stage_metrics else None
         return _build_image_generation_response(
             images=images,
             request=request,
             stage_durations=stage_durations,
             peak_memory_mb=peak_memory_mb,
+            response_metrics=response_metrics,
         )
 
     except (EngineGenerateError, EngineDeadError) as exc:
@@ -2128,7 +2149,7 @@ async def edit_images(
                     status_code=generation_result.error.code if generation_result.error else 400,
                     detail=generation_result.message,
                 )
-            images, stage_durations, peak_memory_mb, cot_output = generation_result
+            images, stage_durations, peak_memory_mb, cot_output, response_metrics = generation_result
         else:
             # Single-stage diffusion: use the direct path.
             result = await _generate_with_async_omni(
@@ -2141,6 +2162,7 @@ async def edit_images(
             images = _extract_images_from_result(result)
             stage_durations = getattr(result, "stage_durations", None)
             peak_memory_mb = getattr(result, "peak_memory_mb", None)
+            response_metrics = getattr(result, "metrics", None) if return_stage_metrics else None
 
         logger.debug(f"Successfully generated {len(images)} image(s)")
 
@@ -2161,10 +2183,11 @@ async def edit_images(
             output_format=output_format,
             size=size_str,
             cot_output=cot_output,
-            metrics={
-                "stage_durations": stage_durations or None,
-                "peak_memory_mb": float(peak_memory_mb) if peak_memory_mb else None,
-            },
+            metrics=_build_image_response_metrics(
+                response_metrics=response_metrics,
+                stage_durations=stage_durations,
+                peak_memory_mb=peak_memory_mb,
+            ),
         )
 
     except (EngineGenerateError, EngineDeadError) as exc:
@@ -2278,15 +2301,17 @@ async def create_video_sync(
     raw_request.state.request_metadata = RequestResponseMetadata(request_id=request_id)
     started_at = time.perf_counter()
     try:
-        video_bytes, stage_durations, peak_memory_mb, _action = await asyncio.wait_for(
-            handler.generate_video_bytes(
-                request,
-                request_id,
-                reference_image=reference_image,
-                reference_video=reference_video,
-                reference_audio=reference_audio,
+        video_bytes, stage_durations, peak_memory_mb, _action, _video_metadata = _unpack_video_generation_result(
+            await asyncio.wait_for(
+                handler.generate_video_bytes(
+                    request,
+                    request_id,
+                    reference_image=reference_image,
+                    reference_video=reference_video,
+                    reference_audio=reference_audio,
+                ),
+                timeout=VIDEO_SYNC_TIMEOUT_S,
             ),
-            timeout=VIDEO_SYNC_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
         raise HTTPException(
