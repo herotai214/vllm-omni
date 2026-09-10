@@ -2446,7 +2446,7 @@ def test_cosmos3_control_upload_rejects_existing_control_source(test_client):
 )
 def test_cosmos3_control_upload_rejects_invalid_size(control_bytes, message, test_client, monkeypatch):
     test_client.app.state.openai_serving_video._engine_client.model_class_name = "Cosmos3OmniDiffusersPipeline"
-    monkeypatch.setattr(api_server, "CONTROL_REFERENCE_MAX_BYTES", 3)
+    monkeypatch.setattr(video_generation_helpers, "CONTROL_REFERENCE_MAX_BYTES", 3)
 
     response = test_client.post(
         "/v1/videos/sync",
