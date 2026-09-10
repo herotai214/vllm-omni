@@ -36,14 +36,8 @@ from typing import Any, Literal, cast
 
 from fastapi import File, Form, HTTPException, Request, UploadFile
 from PIL import Image
-from vllm.entrypoints.launcher import terminate_if_errored
-
-# vLLM < 0.28 keeps create_error_response under serve.utils; 0.28+ moved it
-# under serve.exception_handling and re-exports it from the package root.
-try:
-    from vllm.entrypoints.serve import create_error_response
-except ImportError:
-    from vllm.entrypoints.serve.utils.error_response import create_error_response
+from vllm.entrypoints.launchers.launcher import terminate_if_errored
+from vllm.entrypoints.serve import create_error_response
 from vllm.logger import init_logger
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 

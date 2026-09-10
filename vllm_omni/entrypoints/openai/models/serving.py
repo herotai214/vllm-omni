@@ -5,8 +5,8 @@
 This module mirrors upstream's OpenAI models area for helpers that back
 ``/v1/models`` behavior."""
 
-from vllm.entrypoints.openai.engine.protocol import ModelCard, ModelList, ModelPermission
 from vllm.entrypoints.openai.models.protocol import BaseModelPath
+from vllm.entrypoints.serve.engine.protocol import ModelCard, ModelList, ModelPermission
 
 
 class _DiffusionServingModels:

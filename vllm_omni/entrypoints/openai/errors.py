@@ -11,7 +11,7 @@ from http import HTTPStatus
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.instrumentator.basic import base
 
 
